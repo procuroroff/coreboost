@@ -1,0 +1,11 @@
+[Unit]
+Description=CoreBoost Kernel Tuning Profile Loader
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/coreboost --apply-saved
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
