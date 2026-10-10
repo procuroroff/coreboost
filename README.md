@@ -37,7 +37,7 @@
 ## Installation
 
 ```bash
-git clone https://github.com/<your-username>/coreboost.git
+git clone https://github.com/procuroroff/coreboost.git
 cd coreboost
 sudo ./install.sh
 ```
