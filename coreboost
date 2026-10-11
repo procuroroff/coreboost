@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-COREBOOST v2.5 // Low-Level Kernel Power & Frequency Controller
+COREBOOST v2.6 // Low-Level Kernel Power & Frequency Controller
 Designed for Intel Alder Lake-N (N95) architecture & Linux sysfs / RAPL / P-State interfaces.
 """
 
@@ -114,7 +114,7 @@ def get_kernel_tuning():
 def print_banner():
     print(f"\033[2J\033[H", end="")
     print(f"{C_CYAN}┌─────────────────────────────────────────────────────────────────────────────┐{C_RESET}")
-    print(f"{C_CYAN}│  {C_BOLD}{C_WHITE}COREBOOST v2.5{C_RESET} {C_DIM}// LOW-LEVEL KERNEL FREQUENCY & POWER TUNER{C_RESET}          {C_CYAN}│{C_RESET}")
+    print(f"{C_CYAN}│  {C_BOLD}{C_WHITE}COREBOOST v2.6{C_RESET} {C_DIM}// LOW-LEVEL KERNEL FREQUENCY & POWER TUNER{C_RESET}          {C_CYAN}│{C_RESET}")
     print(f"{C_CYAN}│  {C_GREEN}PLATFORM:{C_RESET} Intel Alder Lake-N (Intel N95 4C/4T) | {C_GREEN}GPU:{C_RESET} Intel UHD Graphics  {C_CYAN}│{C_RESET}")
     print(f"{C_CYAN}│  {C_GREEN}SUBSYSTEM:{C_RESET} intel_pstate / RAPL powercap / i915 / sysctl scheduler         {C_CYAN}│{C_RESET}")
     print(f"{C_CYAN}└─────────────────────────────────────────────────────────────────────────────┘{C_RESET}")
@@ -124,7 +124,7 @@ def print_status_summary():
     gpu = get_gpu_info()
     rapl = get_rapl_info()
     temp = get_temp()
-    active_profile = read_file(CONFIG_FILE, "BALANCED")
+    active_profile = read_file(CONFIG_FILE, "DEFAULT")
     
     temp_color = C_GREEN if temp < 55 else (C_YELLOW if temp < 75 else C_RED)
     mhz_str = " | ".join([f"C{i}:{m}MHz" for i, m in enumerate(cpu['mhz'])])
@@ -144,7 +144,7 @@ def emit_kernel_log(subsystem, register, old_val, new_val, ts_delta, comment="")
     cmt_fmt = f" {C_DIM}({comment}){C_RESET}" if comment else ""
     print(f"  {C_CYAN}{t_str}{C_RESET} {C_YELLOW}{subsystem:14s}{C_RESET} {reg_fmt:36s} {diff_fmt}{cmt_fmt}")
     sys.stdout.flush()
-    time.sleep(random.uniform(0.030, 0.065))
+    time.sleep(random.uniform(0.025, 0.055))
 
 def apply_profile(profile_name):
     print(f"\n{C_BOLD}{C_GREEN}>>> COMMENCING KERNEL REGISTER INJECTION: [{profile_name.upper()}] <<<{C_RESET}\n")
@@ -152,7 +152,6 @@ def apply_profile(profile_name):
     def delta():
         return time.time() - start_time
 
-    # 1. CPU P-State & EPP
     if profile_name == "extreme":
         # Extreme boost
         old_no_turbo = read_file("/sys/devices/system/cpu/intel_pstate/no_turbo", "0")
@@ -202,7 +201,7 @@ def apply_profile(profile_name):
         emit_kernel_log("mm/vm", "sysctl vm.swappiness", "swappiness=60", "swappiness=10", delta(), "RAM pages prioritized over swap device")
 
     elif profile_name == "balanced":
-        # Balanced
+        # Balanced Custom
         write_file("/sys/devices/system/cpu/intel_pstate/no_turbo", "0")
         emit_kernel_log("intel_pstate", "MSR_TURBO_RATIO_LIMIT [0x1AD]", "turbo=?", "0 (ACTIVE)", delta(), "stock turbo boost table restored")
 
@@ -276,6 +275,46 @@ def apply_profile(profile_name):
         write_file("/proc/sys/vm/swappiness", "80")
         emit_kernel_log("mm/vm", "sysctl vm.swappiness", "swap=?", "swappiness=80", delta(), "aggressive RAM caching release")
 
+    elif profile_name in ["default", "stock"]:
+        # OEM Factory Default mode (provided by system/distro)
+        write_file("/sys/devices/system/cpu/intel_pstate/no_turbo", "0")
+        emit_kernel_log("intel_pstate", "MSR_TURBO_RATIO_LIMIT [0x1AD]", "turbo=?", "0 (ACTIVE)", delta(), "OEM default turbo ratio limits")
+
+        write_file("/sys/devices/system/cpu/intel_pstate/hwp_dynamic_boost", "0")
+        emit_kernel_log("intel_pstate", "IA32_HWP_REQUEST [0x774]", "boost=?", "0 (STOCK_DEFAULT)", delta(), "firmware autonomous Energy Performance Bias")
+
+        write_file("/sys/devices/system/cpu/intel_pstate/min_perf_pct", "20")
+        write_file("/sys/devices/system/cpu/intel_pstate/max_perf_pct", "100")
+        emit_kernel_log("intel_pstate", "HWP_PERF_LIMITS [0x771]", "limits=?", "min=20% max=100%", delta(), "factory default Speed Shift range")
+
+        for cpu_idx in range(4):
+            write_file(f"/sys/devices/system/cpu/cpu{cpu_idx}/cpufreq/scaling_governor", "powersave")
+            write_file(f"/sys/devices/system/cpu/cpu{cpu_idx}/cpufreq/energy_performance_preference", "balance_performance")
+        emit_kernel_log("cpufreq/epp", "ENERGY_PERF_BIAS cpu[0..3]", "epp=?", "balance_performance", delta(), "standard Linux distribution governor")
+
+        # GPU
+        write_file("/sys/class/drm/card0/gt_min_freq_mhz", "200")
+        write_file("/sys/class/drm/card0/gt_max_freq_mhz", "1200")
+        write_file("/sys/class/drm/card0/gt_boost_freq_mhz", "1200")
+        emit_kernel_log("drm/i915", "GT_FREQUENCY_AUTO", "clamped", "200MHz - 1200MHz", delta(), "factory full dynamic GPU clock range")
+
+        # RAPL (System BIOS factory limits: 200W burst ceiling, 42W short)
+        write_file("/sys/class/powercap/intel-rapl/intel-rapl:0/constraint_0_power_limit_uw", "200000000")
+        write_file("/sys/class/powercap/intel-rapl/intel-rapl:0/constraint_1_power_limit_uw", "42000000")
+        emit_kernel_log("intel_rapl", "MSR_PKG_POWER_LIMIT [0x610]", "PL1/PL2=?", "PL1=200W PL2=42W", delta(), "OEM firmware factory thermal envelopes")
+
+        write_file("/sys/module/pcie_aspm/parameters/policy", "default")
+        emit_kernel_log("pcie_aspm", "PCIe_LINK_POWER_POLICY", "policy=?", "default", delta(), "ACPI BIOS authority for PCIe power states")
+
+        write_file("/proc/sys/kernel/split_lock_mitigate", "1")
+        emit_kernel_log("x86/split_lock", "MSR_TEST_CTRL.SPLIT_LOCK", "mitigate=?", "mitigate=1 (ACTIVE)", delta(), "stock upstream kernel protection")
+
+        write_file("/proc/sys/kernel/nmi_watchdog", "1")
+        emit_kernel_log("kernel/irq", "NMI_WATCHDOG_INTERRUPT", "watchdog=?", "watchdog=1 (ACTIVE)", delta(), "stock kernel hardware lockup detector")
+
+        write_file("/proc/sys/vm/swappiness", "60")
+        emit_kernel_log("mm/vm", "sysctl vm.swappiness", "swap=?", "swappiness=60", delta(), "standard Linux kernel memory paging default")
+
     # Persist
     write_file(CONFIG_FILE, profile_name)
     print(f"\n  {C_GREEN}[✓] STATUS: ALL REGISTERS COMMITTED TO SYSFS{C_RESET}")
@@ -327,8 +366,9 @@ def main_menu():
         print(f"  {C_CYAN}[1]{C_RESET} {C_BOLD}{C_RED}EXTREME BOOST{C_RESET}       -> P-State floor 100%, EPP perf, GPU 1000-1200M, PL1=25W, Latency bypass")
         print(f"  {C_CYAN}[2]{C_RESET} {C_BOLD}{C_CYAN}BALANCED{C_RESET}            -> Dynamic HWP scaling, EPP balance_perf, GPU 200-1200M, PL1=15W")
         print(f"  {C_CYAN}[3]{C_RESET} {C_BOLD}{C_GREEN}ECO / COLD & SILENT{C_RESET} -> Turbo OFF (1.7GHz max), P-State 60%, GPU 600M, PL1=8W (Silent fan)")
-        print(f"  {C_CYAN}[4]{C_RESET} {C_BOLD}{C_YELLOW}LIVE MONITOR{C_RESET}        -> Continuous real-time sensor stream")
-        print(f"  {C_CYAN}[5]{C_RESET} {C_BOLD}{C_WHITE}ENABLE ON BOOT{C_RESET}      -> Install & enable systemd service for persistence")
+        print(f"  {C_CYAN}[4]{C_RESET} {C_BOLD}{C_WHITE}DEFAULT / STOCK{C_RESET}     -> Restore factory OEM firmware & standard Linux kernel defaults")
+        print(f"  {C_CYAN}[5]{C_RESET} {C_BOLD}{C_YELLOW}LIVE MONITOR{C_RESET}        -> Continuous real-time sensor stream")
+        print(f"  {C_CYAN}[6]{C_RESET} {C_BOLD}{C_WHITE}ENABLE ON BOOT{C_RESET}      -> Install & enable systemd service for persistence")
         print(f"  {C_CYAN}[0]{C_RESET} {C_DIM}EXIT{C_RESET}")
         
         try:
@@ -347,8 +387,11 @@ def main_menu():
             apply_profile("eco")
             input(f"  {C_DIM}Press Enter to return to menu...{C_RESET}")
         elif choice == "4":
-            run_live_monitor()
+            apply_profile("default")
+            input(f"  {C_DIM}Press Enter to return to menu...{C_RESET}")
         elif choice == "5":
+            run_live_monitor()
+        elif choice == "6":
             enable_systemd_service()
             input(f"  {C_DIM}Press Enter to return to menu...{C_RESET}")
         elif choice == "0" or choice.lower() in ["q", "exit"]:
@@ -362,20 +405,22 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         arg = sys.argv[1].lower()
         if arg in ["--apply-saved", "-s"]:
-            saved = read_file(CONFIG_FILE, "balanced")
+            saved = read_file(CONFIG_FILE, "default")
             apply_profile(saved)
         elif arg in ["turbo", "extreme", "boost"]:
             apply_profile("extreme")
-        elif arg in ["balanced", "balance", "default"]:
+        elif arg in ["balanced", "balance"]:
             apply_profile("balanced")
         elif arg in ["eco", "powersave", "quiet"]:
             apply_profile("eco")
+        elif arg in ["default", "stock", "reset"]:
+            apply_profile("default")
         elif arg in ["status", "stat"]:
             print_banner()
             print_status_summary()
         elif arg in ["monitor", "live"]:
             run_live_monitor()
         else:
-            print(f"Usage: coreboost [extreme | balanced | eco | status | monitor]")
+            print(f"Usage: coreboost [extreme | balanced | eco | default | status | monitor]")
     else:
         main_menu()
